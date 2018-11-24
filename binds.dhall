@@ -1,0 +1,4 @@
+[ { target : Text
+  , binds  : [Text]
+  }
+]
