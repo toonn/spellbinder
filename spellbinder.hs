@@ -1,6 +1,6 @@
 #! /usr/bin/env nix-shell
 #! nix-shell -i runghc
-#! nix-shell -p "haskellPackages.ghcWithPackages (ps: [ ps.optparse-applicative ps.text ])"
+#! nix-shell -p "haskellPackages.ghcWithPackages (ps: [ ps.dhall ps.extra ps.optparse-applicative ps.text ])"
 
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -10,6 +10,8 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Char
 import Data.List
+import Control.Monad.Extra (concatMapM)
+import Dhall (inputFile)
 
 data Args = Args { root      :: FilePath
                  , bindFiles :: [FilePath]
@@ -37,8 +39,25 @@ data Binds = Binds { existing  :: [Bind]
                    , redundant :: [Bind]
                    }
 
+data DhallBind = DhallBind { dbTarget :: FilePath
+                           , dbBinds  :: [FilePath]
+                           }
+
+bindRecord :: Type DhallBind
+bindRecord = record ( DhallBind <$> field "target" string
+                                <*> field "binds" list string
+                    )
+
 readBinds :: FilePath -> [FilePath] -> IO [Bind]
-readBinds = undefined
+readBinds root = concatMapM (dbToBinds <$> inputFile bindRecord)
+  where
+    dbToBinds :: DhallBind -> [Bind]
+    dbToBinds db = map (toBind (dbTarget db)) $ dbBinds db
+    toBind :: FilePath -> Bind
+    toBind tgt src =
+      Bind { source = src
+           , target = root </> tgt </> last $ splitDirectories src
+           }
 
 readMountpoints :: FilePath -> IO [FilePath]
 readMountpoints = undefined
@@ -79,9 +98,9 @@ run :: Args -> IO ()
 run as = do
   desiredBinds <- readBinds (root as) (bindFiles as)
   mountpoints <- readMountpoints (root as)
-  let binds = reconcile mountpoints desiredBinds 
-  mapM removeBind (redundant binds)
-  mapM createBind (necessary binds)
+  let binds = reconcile mountpoints desiredBinds
+  mapM_ removeBind (redundant binds)
+  mapM_ createBind (necessary binds)
   replaceFSTab (necessary binds <> existing binds)
   mountFSTab
 
