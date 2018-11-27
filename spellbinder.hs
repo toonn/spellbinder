@@ -4,15 +4,22 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 
-import Options.Applicative
+import Options.Applicative hiding (optional)
 import Data.Semigroup ((<>))
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Char
 import Data.Functor
 import Data.List
+import System.FilePath
 import Control.Monad.Extra (concatMapM)
-import Dhall (inputFile)
+import Text.ParserCombinators.ReadP ( char, satisfy, endBy, skipMany
+                                    , skipSpaces, (+++), readP_to_S, optional
+                                    , manyTill, eof
+                                    )
+import Dhall (Type, record, field, string, list) --inputFile)
+inputFile :: Type a -> FilePath -> IO a
+inputFile = error "Only available in recent dhall releases."
 
 data Args = Args { root       :: FilePath
                  , bindFiles  :: [FilePath]
@@ -53,7 +60,7 @@ data DhallBind = DhallBind { dbTarget :: FilePath
 
 bindRecord :: Type DhallBind
 bindRecord = record ( DhallBind <$> field "target" string
-                                <*> field "binds" list string
+                                <*> field "binds" (list string)
                     )
 
 -- We need to canonicalize paths to avoid things like including a trailing
@@ -66,11 +73,11 @@ tip :: FilePath -> FilePath
 tip = last . splitDirectories
 
 readBinds :: FilePath -> [FilePath] -> IO [Bind]
-readBinds rt = concatMapM (toBinds <$> inputFile bindRecord)
+readBinds rt = concatMapM ((toBinds <$>) . inputFile bindRecord)
   where
     toBinds :: DhallBind -> [Bind]
     toBinds db = map (toBind (dbTarget db)) $ dbBinds db
-    toBind :: FilePath -> Bind
+    toBind :: FilePath -> FilePath -> Bind
     toBind tgt src = Bind { source = src
                           , target = rt </> tgt </> tip src
                           }
@@ -82,12 +89,12 @@ fstabSep = "  "
 -- Even if you could a complete traversal for nested bind mounts would be
 -- impractical.
 -- XXX: Can we do this Stateless?
-readMountpoints :: FilePath -> FilePath -> IO [FilePath]
+readMountpoints :: FilePath -> IO [FilePath]
 readMountpoints rtFSTab = parseMountpoints <$> readFile rtFSTab
   where
     newline = char '\n'
     notNewline = satisfy (/= '\n')
-    notWhiteSpace = satisfy (\c -> not (c `element` "\n\t "))
+    notWhiteSpace = satisfy (`notElem` ['\n', '\t', ' '])
     fstabComment = char '#' *> endBy notNewline newline
     irrelevant = skipMany (skipSpaces +++ optional fstabComment)
     fstabEntryMountpoint = irrelevant
@@ -97,7 +104,8 @@ readMountpoints rtFSTab = parseMountpoints <$> readFile rtFSTab
                          >>= \mp -> skipMany notNewline
                                     *> newline
                                     $> mp
-    parseMountpoints = read_P_to_S (fstabEntryMountpoint `manyTill` eof)
+    parseMountpoints = concatMap fst
+      <$> readP_to_S (fstabEntryMountpoint `manyTill` eof)
 
 removeMount :: FilePath -> IO ()
 removeMount mountpoint = undefined
@@ -134,9 +142,9 @@ mountFSTab = undefined
 run :: Args -> IO ()
 run as = do
   let canonicalRoot = canonicalize $ root as
-  let canonicalWorking = canonicalize $ working as
+  let canonicalWorkingDir = canonicalize $ workingDir as
   let canonicalBinds = map canonicalize $ bindFiles as
-  let rootFSTab = canonicalWorking </> canonicalRoot <.> "fstab"
+  let rootFSTab = canonicalWorkingDir </> canonicalRoot <.> "fstab"
   desiredBinds <- readBinds canonicalRoot canonicalBinds
   mountpoints <- readMountpoints rootFSTab
   let binds = reconcile mountpoints desiredBinds
